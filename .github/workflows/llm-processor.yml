@@ -81,6 +81,7 @@ jobs:
       file-exists: ${{ steps.check.outputs.exists }}
       estimated-time: ${{ steps.estimate.outputs.time }}
       file-size: ${{ steps.check.outputs.file_size }}
+      estimated-chunks: ${{ steps.check.outputs.estimated_chunks }}
     
     steps:
     - name: Checkout repository
@@ -96,14 +97,21 @@ jobs:
           # Показываем размер файла
           file_size=$(wc -c < "${{ github.event.inputs.input_file }}")
           echo "file_size=$file_size" >> $GITHUB_OUTPUT
-          echo "📁 Размер файла: $(($file_size / 1024))KB ($(($file_size / 1024 / 1024))MB)"
+          
+          # Вычисляем размеры
+          file_size_kb=$((file_size / 1024))
+          file_size_mb=$((file_size_kb / 1024))
+          
+          echo "📁 Размер файла: ${file_size_kb}KB (${file_size_mb}MB)"
           
           # Примерная оценка токенов (1 токен ≈ 4 символа)
-          estimated_tokens=$(($file_size / 4))
+          estimated_tokens=$((file_size / 4))
           chunk_size=${{ github.event.inputs.chunk_size }}
-          estimated_chunks=$(($estimated_tokens / $chunk_size + 1))
+          estimated_chunks=$((estimated_tokens / chunk_size + 1))
           
-          echo "🔢 Примерное количество токенов: $(printf "%'d" $estimated_tokens)"
+          echo "estimated_chunks=$estimated_chunks" >> $GITHUB_OUTPUT
+          
+          echo "🔢 Примерное количество токенов: $estimated_tokens"
           echo "📦 Примерное количество чанков: $estimated_chunks"
           
         else
@@ -116,18 +124,18 @@ jobs:
       id: estimate
       if: steps.check.outputs.exists == 'true'
       run: |
-        file_size=$(wc -c < "${{ github.event.inputs.input_file }}")
-        estimated_tokens=$(($file_size / 4))
-        chunk_size=${{ github.event.inputs.chunk_size }}
-        estimated_chunks=$(($estimated_tokens / $chunk_size + 1))
+        estimated_chunks=${{ steps.check.outputs.estimated_chunks }}
         delay=${{ github.event.inputs.delay_between_chunks }}
         concurrent=${{ github.event.inputs.concurrent_requests }}
         
         # Время для платного уровня (быстрая обработка)
-        processing_time_per_chunk=10  # 10 секунд на чанк для платного API
-        total_processing_time=$((($estimated_chunks * $processing_time_per_chunk) / $concurrent))
-        total_delay_time=$(($estimated_chunks * $delay))
-        estimated_minutes=$(($total_processing_time + $total_delay_time) / 60)
+        processing_time_per_chunk=10
+        
+        # Используем bc для вычислений с плавающей точкой
+        total_processing_time=$((estimated_chunks * processing_time_per_chunk / concurrent))
+        total_delay_time=$((estimated_chunks * delay))
+        total_time_seconds=$((total_processing_time + total_delay_time))
+        estimated_minutes=$((total_time_seconds / 60))
         
         echo "time=${estimated_minutes}" >> $GITHUB_OUTPUT
         echo "⏱️ Примерное время обработки: ${estimated_minutes} минут"
@@ -186,13 +194,17 @@ jobs:
     
     - name: Show processing parameters (Paid Tier)
       run: |
+        file_size=${{ needs.validate-inputs.outputs.file-size }}
+        file_size_kb=$((file_size / 1024))
+        
         echo "🚀 Параметры обработки (ПЛАТНЫЙ УРОВЕНЬ):"
         echo "   📄 Файл: ${{ github.event.inputs.input_file }}"
-        echo "   📏 Размер: $((${{ needs.validate-inputs.outputs.file-size }} / 1024))KB"
+        echo "   📏 Размер: ${file_size_kb}KB"
         echo "   🤖 Модель: ${{ github.event.inputs.model }}"
-        echo "   📦 Размер чанка: $(printf "%'d" ${{ github.event.inputs.chunk_size }}) токенов"
-        echo "   ⚡ Задержка: ${{ github.event.inputs.delay_between_chunks }} секунд (быстрая обработка)"
+        echo "   📦 Размер чанка: ${{ github.event.inputs.chunk_size }} токенов"
+        echo "   ⚡ Задержка: ${{ github.event.inputs.delay_between_chunks }} секунд"
         echo "   🔄 Параллельных запросов: ${{ github.event.inputs.concurrent_requests }}"
+        echo "   📦 Ожидаемых чанков: ${{ needs.validate-inputs.outputs.estimated-chunks }}"
         echo "   💾 Выходной файл: ${{ github.event.inputs.output_filename }}.txt"
         echo "   📝 Промпт: ${{ github.event.inputs.prompt }}"
         echo ""
@@ -239,10 +251,14 @@ jobs:
           line_count=$(wc -l < "$output_file")
           word_count=$(wc -w < "$output_file")
           
+          # Вычисляем размеры
+          file_size_kb=$((file_size / 1024))
+          file_size_mb=$((file_size_kb / 1024))
+          
           echo "📄 Создан файл: $output_file"
-          echo "📏 Размер: $(($file_size / 1024))KB ($(($file_size / 1024 / 1024))MB)"
-          echo "📝 Строк: $(printf "%'d" $line_count)"
-          echo "📝 Слов: $(printf "%'d" $word_count)"
+          echo "📏 Размер: ${file_size_kb}KB (${file_size_mb}MB)"
+          echo "📝 Строк: $line_count"
+          echo "📝 Слов: $word_count"
           
           echo "file_created=true" >> $GITHUB_OUTPUT
           echo "file_size=$file_size" >> $GITHUB_OUTPUT
@@ -277,16 +293,20 @@ jobs:
       run: |
         summary_file="outputs/processing_summary.md"
         
+        input_size=${{ needs.validate-inputs.outputs.file-size }}
+        input_size_kb=$((input_size / 1024))
+        
         cat > "$summary_file" << EOF
         # 🚀 Отчет об обработке файла (Платный уровень)
         
         ## 📊 Параметры обработки
         - **Входной файл**: \`${{ github.event.inputs.input_file }}\`
-        - **Размер входного файла**: $((${{ needs.validate-inputs.outputs.file-size }} / 1024))KB
+        - **Размер входного файла**: ${input_size_kb}KB
         - **Модель**: \`${{ github.event.inputs.model }}\`
-        - **Размер чанка**: $(printf "%'d" ${{ github.event.inputs.chunk_size }}) токенов
+        - **Размер чанка**: ${{ github.event.inputs.chunk_size }} токенов
         - **Задержка между запросами**: ${{ github.event.inputs.delay_between_chunks }} секунд
         - **Параллельных запросов**: ${{ github.event.inputs.concurrent_requests }}
+        - **Ожидаемых чанков**: ${{ needs.validate-inputs.outputs.estimated-chunks }}
         - **Время обработки**: $(date)
         - **Уровень**: 💳 Платный (высокие лимиты)
         
@@ -296,139 +316,7 @@ jobs:
         EOF
         
         if [ "${{ steps.check_output.outputs.file_created }}" == "true" ]; then
-          echo "- **Размер результата**: $((${{ steps.check_output.outputs.file_size }} / 1024))KB" >> "$summary_file"
-          echo "- **Количество строк**: $(printf "%'d" ${{ steps.check_output.outputs.line_count }})" >> "$summary_file"
-        fi
-        
-        echo "" >> "$summary_file"
-        echo "## 💭 Промпт" >> "$summary_file"
-        echo "\`\`\`" >> "$summary_file"
-        echo "${{ github.event.inputs.prompt }}" >> "$summary_file"
-        echo "\`\`\`" >> "$summary_file"
-        
-        echo "" >> "$summary_file"
-        echo "## ⚡ Преимущества платного уровня" >> "$summary_file"
-        echo "- Высокие лимиты TPM (токенов в минуту)" >> "$summary_file"
-        echo "- Минимальные задержки между запросами" >> "$summary_file"
-        echo "- Параллельная обработка чанков" >> "$summary_file"
-        echo "- Большие размеры чанков для эффективности" >> "$summary_file"
-        
-        cat "$summary_file"
-    
-    - name: Upload summary
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: processing-summary-paid
-        path: outputs/processing_summary.md
-        retention-days: 30
-    
-    - name: Create performance metrics
-      if: steps.check_output.outputs.file_created == 'true'
-      run: |
-        metrics_file="outputs/performance_metrics.json"
-        
-        cat > "$metrics_file" << EOF
-        {
-          "processing_date": "$(date -Iseconds)",
-          "input_file": "${{ github.event.inputs.input_file }}",
-          "input_size_bytes": ${{ needs.validate-inputs.outputs.file-size }},
-          "output_size_bytes": ${{ steps.check_output.outputs.file_size }},
-          "model": "${{ github.event.inputs.model }}",
-          "chunk_size": ${{ github.event.inputs.chunk_size }},
-          "delay_seconds": ${{ github.event.inputs.delay_between_chunks }},
-          "concurrent_requests": ${{ github.event.inputs.concurrent_requests }},
-          "tier": "paid",
-          "status": "${{ steps.process.outputs.success }}",
-          "estimated_processing_time_minutes": ${{ needs.validate-inputs.outputs.estimated-time }}
-        }
-        EOF
-        
-        echo "📊 Метрики производительности сохранены"
-        cat "$metrics_file"
-    
-    - name: Upload metrics
-      if: steps.check_output.outputs.file_created == 'true'
-      uses: actions/upload-artifact@v4
-      with:
-        name: performance-metrics
-        path: outputs/performance_metrics.json
-        retention-days: 90
-    
-    - name: Commit results to repository
-      if: steps.check_output.outputs.file_created == 'true'
-      continue-on-error: true
-      run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "Gemini Processor Bot"
-        
-        # Добавляем только файлы результатов
-        git add outputs/
-        
-        if git diff --staged --quiet; then
-          echo "ℹ️ Нет новых файлов для коммита"
-        else
-          timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-          model="${{ github.event.inputs.model }}"
-          chunk_size="${{ github.event.inputs.chunk_size }}"
-          
-          git commit -m "🚀 Обработка файла на платном уровне: ${{ github.event.inputs.output_filename }}.txt
-
-          📊 Параметры:
-          - Модель: $model
-          - Размер чанка: $(printf "%'d" $chunk_size) токенов
-          - Параллельность: ${{ github.event.inputs.concurrent_requests }}x
-          - Время: $timestamp"
-          
-          # Пробуем запушить изменения
-          if git push; then
-            echo "✅ Результаты сохранены в репозиторий"
-          else
-            echo "⚠️ Не удалось сохранить в репозиторий (проверьте права доступа)"
-          fi
-        fi
-
-  notify-completion:
-    name: Notify Completion
-    runs-on: ubuntu-latest
-    needs: [validate-inputs, process-file]
-    if: always()
-    
-    steps:
-    - name: Processing completion summary
-      run: |
-        echo "🎯 ОБРАБОТКА ЗАВЕРШЕНА (ПЛАТНЫЙ УРОВЕНЬ)"
-        echo "========================================"
-        echo "📄 Файл: ${{ github.event.inputs.input_file }}"
-        echo "📏 Размер: $((${{ needs.validate-inputs.outputs.file-size }} / 1024))KB"
-        echo "🤖 Модель: ${{ github.event.inputs.model }}"
-        echo "📦 Чанк: $(printf "%'d" ${{ github.event.inputs.chunk_size }}) токенов"
-        echo "⚡ Задержка: ${{ github.event.inputs.delay_between_chunks }}с"
-        echo "🔄 Параллельность: ${{ github.event.inputs.concurrent_requests }}x"
-        echo "⏱️ Время: $(date)"
-        echo ""
-        
-        if [ "${{ needs.process-file.result }}" == "success" ]; then
-          echo "✅ Статус: Успешно завершено"
-          echo ""
-          echo "📥 Скачать результаты:"
-          echo "   1. Перейдите во вкладку 'Actions'"
-          echo "   2. Выберите этот workflow"
-          echo "   3. Скачайте артефакты:"
-          echo "      - '${{ github.event.inputs.output_filename }}-${{ github.event.inputs.model }}-paid-result' (основной результат)"
-          echo "      - 'processing-summary-paid' (отчет)"
-          echo "      - 'performance-metrics' (метрики)"
-        elif [ "${{ needs.process-file.result }}" == "failure" ]; then
-          echo "❌ Статус: Ошибка"
-          echo "   Проверьте логи выполнения для подробностей"
-        else
-          echo "⚠️ Статус: Частично выполнено"
-          echo "   Некоторые чанки могли быть обработаны"
-        fi
-        
-        echo ""
-        echo "💳 Преимущества платного уровня использованы:"
-        echo "   ✅ Высокие лимиты TPM"
-        echo "   ✅ Минимальные задержки"
-        echo "   ✅ Параллельная обработка"
-        echo "   ✅ Большие чанки для эффективности"
+          output_size=${{ steps.check_output.outputs.file_size }}
+          output_size_kb=$((output_size / 1024))
+          echo "- **Размер результата**: ${output_size_kb}KB" >> "$summary_file"
+          echo "- **Количество строк**: ${{ steps.check_output.outputs.line_count }}" >> "$summary
