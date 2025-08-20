@@ -1,5 +1,5 @@
-# .github/workflows/llm-processor.yml
-name: LLM File Processor
+# .github/workflows/gemini-processor.yml
+name: Gemini File Processor
 
 on:
   workflow_dispatch:
@@ -18,14 +18,14 @@ on:
         type: string
         default: 'processed_output.txt'
       model:
-        description: 'Модель LLM'
+        description: 'Модель Gemini'
         required: false
         type: choice
         options:
-          - 'gpt-3.5-turbo'
-          - 'gpt-4'
-          - 'gpt-4-turbo'
-        default: 'gpt-3.5-turbo'
+          - 'gemini-2.0-flash-exp'
+          - 'gemini-1.5-flash'
+          - 'gemini-1.5-pro'
+        default: 'gemini-2.0-flash-exp'
 
 jobs:
   process-file:
@@ -45,9 +45,9 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
     
-    - name: Process file with LLM
+    - name: Process file with Gemini
       env:
-        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       run: |
         python main.py \
           --file "${{ github.event.inputs.input_file }}" \
