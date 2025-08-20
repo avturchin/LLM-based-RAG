@@ -9,21 +9,22 @@ from typing import List, Optional
 import argparse
 from pathlib import Path
 
-class LLMFileProcessor:
-    def __init__(self, api_key: str, model: str = "gpt-3.5-turbo"):
+class GeminiFileProcessor:
+    def __init__(self, api_key: str, model: str = "gemini-2.0-flash-exp"):
         self.api_key = api_key
         self.model = model
-        self.encoding = tiktoken.encoding_for_model(model)
-        self.max_tokens_per_chunk = 1_000_000
+        # Используем tiktoken для подсчета токенов (примерная оценка для Gemini)
+        self.encoding = tiktoken.get_encoding("cl100k_base")
+        self.max_tokens_per_chunk = 200_000
         
     def count_tokens(self, text: str) -> int:
         """Подсчет токенов в тексте"""
         return len(self.encoding.encode(text))
     
     def split_into_chunks(self, text: str, prompt: str) -> List[str]:
-        """Разбивка текста на чанки по 1 млн токенов"""
+        """Разбивка текста на чанки по 200 тысяч токенов"""
         prompt_tokens = self.count_tokens(prompt)
-        available_tokens = self.max_tokens_per_chunk - prompt_tokens - 500  # резерв для ответа
+        available_tokens = self.max_tokens_per_chunk - prompt_tokens - 2000  # резерв для ответа
         
         chunks = []
         current_chunk = ""
@@ -60,37 +61,88 @@ class LLMFileProcessor:
         return chunks
     
     async def process_chunk(self, session: aiohttp.ClientSession, chunk: str, prompt: str, chunk_index: int) -> dict:
-        """Обработка одного чанка через LLM API"""
+        """Обработка одного чанка через Gemini API"""
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
+        
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
         
+        # Формируем запрос для Gemini API
         data = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": chunk}
+            "contents": [
+                {
+                    "parts": [
+                        {"text": f"{prompt}\n\nТекст для обработки:\n{chunk}"}
+                    ]
+                }
             ],
-            "temperature": 0.7
+            "generationConfig": {
+                "temperature": 0.7,
+                "topK": 40,
+                "topP": 0.95,
+                "maxOutputTokens": 8192,
+                "candidateCount": 1
+            },
+            "safetySettings": [
+                {
+                    "category": "HARM_CATEGORY_HARASSMENT",
+                    "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+                },
+                {
+                    "category": "HARM_CATEGORY_HATE_SPEECH",
+                    "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+                },
+                {
+                    "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                    "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+                },
+                {
+                    "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                    "threshold": "BLOCK_MEDIUM_AND_ABOVE"
+                }
+            ]
         }
         
         try:
-            async with session.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers=headers,
-                json=data
-            ) as response:
+            async with session.post(url, headers=headers, json=data) as response:
                 if response.status == 200:
                     result = await response.json()
-                    content = result["choices"][0]["message"]["content"]
-                    print(f"✓ Обработан чанк {chunk_index + 1}")
-                    return {
-                        "chunk_index": chunk_index,
-                        "success": True,
-                        "content": content,
-                        "tokens_used": result.get("usage", {}).get("total_tokens", 0)
-                    }
+                    
+                    # Извлекаем содержимое ответа
+                    if "candidates" in result and len(result["candidates"]) > 0:
+                        candidate = result["candidates"][0]
+                        if "content" in candidate and "parts" in candidate["content"]:
+                            content = candidate["content"]["parts"][0]["text"]
+                            
+                            # Подсчитываем токены (примерно)
+                            input_tokens = self.count_tokens(chunk + prompt)
+                            output_tokens = self.count_tokens(content)
+                            total_tokens = input_tokens + output_tokens
+                            
+                            print(f"✓ Обработан чанк {chunk_index + 1}")
+                            return {
+                                "chunk_index": chunk_index,
+                                "success": True,
+                                "content": content,
+                                "tokens_used": total_tokens,
+                                "input_tokens": input_tokens,
+                                "output_tokens": output_tokens
+                            }
+                        else:
+                            print(f"✗ Пустой ответ для чанка {chunk_index + 1}")
+                            return {
+                                "chunk_index": chunk_index,
+                                "success": False,
+                                "error": "Пустой ответ от Gemini"
+                            }
+                    else:
+                        print(f"✗ Нет кандидатов в ответе для чанка {chunk_index + 1}")
+                        return {
+                            "chunk_index": chunk_index,
+                            "success": False,
+                            "error": "Нет кандидатов в ответе"
+                        }
                 else:
                     error_text = await response.text()
                     print(f"✗ Ошибка в чанке {chunk_index + 1}: {response.status} - {error_text}")
@@ -105,7 +157,6 @@ class LLMFileProcessor:
                 "chunk_index": chunk_index,
                 "success": False,
                 "error": str(e)
-            }
     
     async def process_file(self, file_path: str, prompt: str, output_path: str):
         """Основная функция обработки файла"""
@@ -116,20 +167,27 @@ class LLMFileProcessor:
             content = f.read()
         
         print(f"Размер файла: {len(content)} символов")
-        print(f"Токенов в файле: {self.count_tokens(content)}")
+        print(f"Примерное количество токенов в файле: {self.count_tokens(content)}")
         
         # Разбивка на чанки
         chunks = self.split_into_chunks(content, prompt)
-        print(f"Файл разбит на {len(chunks)} чанков")
+        print(f"Файл разбит на {len(chunks)} чанков по ~{self.max_tokens_per_chunk:,} токенов")
         
-        # Обработка чанков
+        # Обработка чанков с задержкой для соблюдения rate limits
         results = []
-        async with aiohttp.ClientSession() as session:
-            tasks = [
-                self.process_chunk(session, chunk, prompt, i)
-                for i, chunk in enumerate(chunks)
-            ]
-            results = await asyncio.gather(*tasks)
+        connector = aiohttp.TCPConnector(limit=10)  # Ограничиваем количество соединений
+        timeout = aiohttp.ClientTimeout(total=300)  # Увеличиваем таймаут до 5 минут
+        
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            # Обрабатываем чанки с небольшой задержкой
+            for i, chunk in enumerate(chunks):
+                print(f"Обработка чанка {i + 1}/{len(chunks)}...")
+                result = await self.process_chunk(session, chunk, prompt, i)
+                results.append(result)
+                
+                # Задержка между запросами для соблюдения rate limits Gemini
+                if i < len(chunks) - 1:  # Не ждем после последнего чанка
+                    await asyncio.sleep(1)  # 1 секунда между запросами
         
         # Сбор результатов
         successful_results = [r for r in results if r["success"]]
@@ -152,26 +210,34 @@ class LLMFileProcessor:
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(final_content)
         
+        # Статистика
         total_tokens = sum(r.get("tokens_used", 0) for r in successful_results)
+        total_input_tokens = sum(r.get("input_tokens", 0) for r in successful_results)
+        total_output_tokens = sum(r.get("output_tokens", 0) for r in successful_results)
+        
         print(f"\n✓ Обработка завершена!")
         print(f"  Успешно обработано: {len(successful_results)}/{len(chunks)} чанков")
-        print(f"  Общее количество токенов: {total_tokens}")
+        print(f"  Общее количество токенов: {total_tokens:,}")
+        print(f"  Входящие токены: {total_input_tokens:,}")
+        print(f"  Исходящие токены: {total_output_tokens:,}")
         print(f"  Результат сохранен в: {output_path}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Обработка больших файлов через LLM")
+    parser = argparse.ArgumentParser(description="Обработка больших файлов через Gemini API")
     parser.add_argument("--file", required=True, help="Путь к входному файлу")
     parser.add_argument("--prompt", required=True, help="Промпт для обработки")
     parser.add_argument("--output", required=True, help="Путь к выходному файлу")
-    parser.add_argument("--model", default="gpt-3.5-turbo", help="Модель LLM")
-    parser.add_argument("--api-key", help="API ключ (или используйте переменную OPENAI_API_KEY)")
+    parser.add_argument("--model", default="gemini-2.0-flash-exp", 
+                       help="Модель Gemini (по умолчанию: gemini-2.0-flash-exp)")
+    parser.add_argument("--api-key", help="API ключ Gemini (или используйте переменную GEMINI_API_KEY)")
     
     args = parser.parse_args()
     
     # Получение API ключа
-    api_key = args.api_key or os.getenv("OPENAI_API_KEY")
+    api_key = args.api_key or os.getenv("GEMINI_API_KEY")
     if not api_key:
-        print("❌ Не указан API ключ. Используйте --api-key или установите переменную OPENAI_API_KEY")
+        print("❌ Не указан API ключ Gemini. Используйте --api-key или установите переменную GEMINI_API_KEY")
+        print("Получить API ключ можно на: https://aistudio.google.com/app/apikey")
         sys.exit(1)
     
     # Проверка существования входного файла
@@ -180,7 +246,7 @@ def main():
         sys.exit(1)
     
     # Создание процессора и запуск
-    processor = LLMFileProcessor(api_key, args.model)
+    processor = GeminiFileProcessor(api_key, args.model)
     
     try:
         asyncio.run(processor.process_file(args.file, args.prompt, args.output))
