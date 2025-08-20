@@ -1,0 +1,14 @@
+{
+  "processing_date": "2025-08-20T15:43:23+00:00",
+  "input_file": "data/facts27.txt",
+  "input_size_bytes": 2423666,
+  "output_size_bytes": 9347,
+  "model": "gemini-2.5-flash",
+  "chunk_size": 1000000,
+  "delay_seconds": 0,
+  "concurrent_requests": 3,
+  "estimated_chunks": 1,
+  "tier": "paid",
+  "status": "true",
+  "estimated_processing_time_minutes": 0
+}
