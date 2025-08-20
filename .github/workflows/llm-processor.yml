@@ -31,9 +31,14 @@ jobs:
   process-file:
     runs-on: ubuntu-latest
     
+    permissions:
+      contents: write  # Разрешение на запись в репозиторий
+    
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
     
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -55,18 +60,23 @@ jobs:
           --output "outputs/${{ github.event.inputs.output_file }}" \
           --model "${{ github.event.inputs.model }}"
     
-    - name: Upload processed file
+    - name: Upload processed file as artifact (текстовый файл)
       uses: actions/upload-artifact@v4
       with:
         name: processed-file
         path: outputs/${{ github.event.inputs.output_file }}
         retention-days: 30
+        compression-level: 0  # Без сжатия, сохраняет как обычный файл
     
-    - name: Commit results (optional)
+    - name: Commit and push results
       if: success()
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
         git add outputs/
-        git commit -m "Add processed file: ${{ github.event.inputs.output_file }}" || exit 0
-        git push || exit 0
+        if git diff --staged --quiet; then
+          echo "Нет изменений для коммита"
+        else
+          git commit -m "Add processed file: ${{ github.event.inputs.output_file }}"
+          git push
+        fi
