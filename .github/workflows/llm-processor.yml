@@ -1,0 +1,72 @@
+# .github/workflows/llm-processor.yml
+name: LLM File Processor
+
+on:
+  workflow_dispatch:
+    inputs:
+      input_file:
+        description: 'Путь к входному файлу в репозитории'
+        required: true
+        type: string
+      prompt:
+        description: 'Промпт для обработки'
+        required: true
+        type: string
+      output_file:
+        description: 'Имя выходного файла'
+        required: true
+        type: string
+        default: 'processed_output.txt'
+      model:
+        description: 'Модель LLM'
+        required: false
+        type: choice
+        options:
+          - 'gpt-3.5-turbo'
+          - 'gpt-4'
+          - 'gpt-4-turbo'
+        default: 'gpt-3.5-turbo'
+
+jobs:
+  process-file:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Process file with LLM
+      env:
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      run: |
+        python main.py \
+          --file "${{ github.event.inputs.input_file }}" \
+          --prompt "${{ github.event.inputs.prompt }}" \
+          --output "outputs/${{ github.event.inputs.output_file }}" \
+          --model "${{ github.event.inputs.model }}"
+    
+    - name: Upload processed file
+      uses: actions/upload-artifact@v4
+      with:
+        name: processed-file
+        path: outputs/${{ github.event.inputs.output_file }}
+        retention-days: 30
+    
+    - name: Commit results (optional)
+      if: success()
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add outputs/
+        git commit -m "Add processed file: ${{ github.event.inputs.output_file }}" || exit 0
+        git push || exit 0
