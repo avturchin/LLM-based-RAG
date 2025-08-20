@@ -157,6 +157,7 @@ class GeminiFileProcessor:
                 "chunk_index": chunk_index,
                 "success": False,
                 "error": str(e)
+            }
     
     async def process_file(self, file_path: str, prompt: str, output_path: str):
         """Основная функция обработки файла"""
