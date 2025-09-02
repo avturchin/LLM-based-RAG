@@ -232,17 +232,28 @@ jobs:
         echo "   ✅ Оптимизированные таймауты и соединения"
         echo "   ✅ Автоматическое восстановление при ошибках"
     
+    - name: Save prompt to file
+      run: |
+        # Сохраняем промпт в файл, чтобы избежать проблем с кавычками
+        echo '${{ github.event.inputs.prompt }}' > prompt.txt
+        echo "💾 Промпт сохранен в файл для безопасной передачи"
+        echo "📝 Содержимое промпта:"
+        cat prompt.txt
+    
     - name: Process file with Gemini API (Fast Parallel)
       id: process
       run: |
         echo "🚀 Начинаем быструю параллельную обработку..."
+        
+        # Читаем промпт из файла
+        PROMPT_TEXT=$(cat prompt.txt)
         
         # Устанавливаем переменные для обработки ошибок
         set +e
         
         python main.py \
           --file "${{ github.event.inputs.input_file }}" \
-          --prompt "${{ github.event.inputs.prompt }}" \
+          --prompt "$PROMPT_TEXT" \
           --output "outputs/${{ github.event.inputs.output_filename }}.txt" \
           --model "${{ github.event.inputs.model }}" \
           --chunk-size "${{ github.event.inputs.chunk_size }}" \
@@ -346,7 +357,8 @@ jobs:
         echo "" >> "$summary_file"
         echo "## 💭 Промпт" >> "$summary_file"
         echo "\`\`\`" >> "$summary_file"
-        echo "${{ github.event.inputs.prompt }}" >> "$summary_file"
+        cat prompt.txt >> "$summary_file"
+        echo "" >> "$summary_file"
         echo "\`\`\`" >> "$summary_file"
         
         echo "" >> "$summary_file"
@@ -399,6 +411,14 @@ jobs:
         name: performance-metrics-fast-parallel
         path: outputs/performance_metrics.json
         retention-days: 90
+    
+    - name: Upload prompt file for debugging
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: debug-prompt-file
+        path: prompt.txt
+        retention-days: 7
     
     - name: Commit results to repository
       if: steps.check_output.outputs.file_created == 'true'
