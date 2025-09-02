@@ -1,4 +1,3 @@
-# main.py
 import os
 import sys
 import json
@@ -53,12 +52,15 @@ class GeminiFileProcessor:
         return len(self.encoding.encode(text))
     
     def split_into_chunks(self, text: str, prompt: str, max_chunk_tokens: int) -> List[str]:
-        """Разбивка текста на чанки с учетом лимитов"""
+        """Разбивка текста на чанки с учетом лимитов и минимального размера 10,000 токенов"""
         prompt_tokens = self.count_tokens(prompt)
         available_tokens = max_chunk_tokens - prompt_tokens - 2000  # резерв для ответа
         
-        if available_tokens <= 0:
-            raise ValueError(f"Промпт слишком длинный ({prompt_tokens} токенов)")
+        # Устанавливаем минимальный размер чанка в 10,000 токенов
+        min_chunk_tokens = 10000
+        
+        if available_tokens <= min_chunk_tokens:
+            raise ValueError(f"Размер чанка слишком мал. Требуется минимум {min_chunk_tokens + prompt_tokens + 2000} токенов")
         
         chunks = []
         current_chunk = ""
@@ -70,31 +72,49 @@ class GeminiFileProcessor:
             paragraph_tokens = self.count_tokens(paragraph)
             current_chunk_tokens = self.count_tokens(current_chunk)
             
+            # Если добавление этого абзаца превысит лимит
             if current_chunk_tokens + paragraph_tokens > available_tokens:
-                if current_chunk:
+                # Проверяем, достигли ли мы минимального размера
+                if current_chunk_tokens >= min_chunk_tokens:
                     chunks.append(current_chunk.strip())
                     current_chunk = paragraph
-                else:
-                    # Если абзац слишком большой, разбиваем по предложениям
+                elif current_chunk:
+                    # Если чанк меньше минимума, продолжаем добавлять
+                    # Разбиваем большой абзац по предложениям
                     sentences = paragraph.split('. ')
                     for sentence in sentences:
                         sentence_with_dot = sentence + ". " if not sentence.endswith('.') else sentence + " "
+                        
                         if self.count_tokens(current_chunk + sentence_with_dot) > available_tokens:
-                            if current_chunk:
+                            if self.count_tokens(current_chunk) >= min_chunk_tokens:
                                 chunks.append(current_chunk.strip())
                                 current_chunk = sentence_with_dot
                             else:
-                                # Если предложение слишком большое, разбиваем на части
+                                # Принудительно добавляем предложение, если чанк еще мал
+                                current_chunk += sentence_with_dot
+                        else:
+                            current_chunk += sentence_with_dot
+                else:
+                    # Первый абзац слишком большой, разбиваем по предложениям
+                    sentences = paragraph.split('. ')
+                    for sentence in sentences:
+                        sentence_with_dot = sentence + ". " if not sentence.endswith('.') else sentence + " "
+                        
+                        if self.count_tokens(current_chunk + sentence_with_dot) > available_tokens:
+                            if current_chunk and self.count_tokens(current_chunk) >= min_chunk_tokens:
+                                chunks.append(current_chunk.strip())
+                                current_chunk = sentence_with_dot
+                            else:
+                                # Разбиваем по словам, если предложение слишком большое
                                 words = sentence.split()
                                 for word in words:
                                     word_with_space = word + " "
                                     if self.count_tokens(current_chunk + word_with_space) > available_tokens:
-                                        if current_chunk:
+                                        if current_chunk and self.count_tokens(current_chunk) >= min_chunk_tokens:
                                             chunks.append(current_chunk.strip())
                                             current_chunk = word_with_space
                                         else:
-                                            # Даже одно слово не помещается - обрезаем
-                                            current_chunk = word_with_space
+                                            current_chunk += word_with_space
                                     else:
                                         current_chunk += word_with_space
                         else:
@@ -102,10 +122,31 @@ class GeminiFileProcessor:
             else:
                 current_chunk += paragraph + "\n\n"
         
+        # Добавляем последний чанк
         if current_chunk:
-            chunks.append(current_chunk.strip())
+            current_chunk_tokens = self.count_tokens(current_chunk)
+            if current_chunk_tokens >= min_chunk_tokens or not chunks:
+                chunks.append(current_chunk.strip())
+            elif chunks:
+                # Если последний чанк слишком мал, добавляем к предыдущему
+                chunks[-1] += "\n\n" + current_chunk.strip()
+        
+        # Проверяем, что все чанки соответствуют минимальному размеру
+        final_chunks = []
+        for i, chunk in enumerate(chunks):
+            chunk_tokens = self.count_tokens(chunk)
+            if chunk_tokens < min_chunk_tokens and i < len(chunks) - 1:
+                # Объединяем с следующим чанком
+                chunks[i + 1] = chunk + "\n\n" + chunks[i + 1]
+            else:
+                final_chunks.append(chunk)
+                
+        print(f"📏 Минимальный размер чанка: {min_chunk_tokens:,} токенов")
+        for i, chunk in enumerate(final_chunks):
+            chunk_tokens = self.count_tokens(chunk)
+            print(f"   Чанк {i + 1}: {chunk_tokens:,} токенов")
             
-        return chunks
+        return final_chunks
     
     async def process_chunk_with_retry(self, session: aiohttp.ClientSession, chunk: str, prompt: str, chunk_index: int, max_retries: int = 3) -> dict:
         """Обработка чанка с повторными попытками при rate limit"""
@@ -118,7 +159,7 @@ class GeminiFileProcessor:
                 # Если ошибка 429 (rate limit), ждем и повторяем
                 if "429" in str(result.get("error", "")):
                     if self.paid_tier:
-                        wait_time = 30 * (attempt + 1)  # Меньше ожидания для платного
+                        wait_time = 15 * (attempt + 1)  # Меньше ожидания для платного
                     else:
                         wait_time = 60 * (attempt + 1)  # Больше для free tier
                     
@@ -131,7 +172,7 @@ class GeminiFileProcessor:
             except Exception as e:
                 print(f"❌ Ошибка в попытке {attempt + 1} для чанка {chunk_index + 1}: {e}")
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(10 * (attempt + 1))
+                    await asyncio.sleep(5 * (attempt + 1))
                     
         return {
             "chunk_index": chunk_index,
@@ -198,7 +239,7 @@ class GeminiFileProcessor:
             return {"chunk_index": chunk_index, "success": False, "error": str(e)}
     
     async def process_file(self, file_path: str, prompt: str, output_path: str, chunk_size: int = 1000000, delay: int = 0, concurrent: int = 1):
-        """Основная функция обработки файла"""
+        """Основная функция обработки файла с полной параллелизацией"""
         print(f"📂 Загрузка файла: {file_path}")
         
         try:
@@ -215,56 +256,74 @@ class GeminiFileProcessor:
         print(f"🔢 Примерное количество токенов: {total_tokens:,}")
         
         chunks = self.split_into_chunks(content, prompt, chunk_size)
-        print(f"📦 Файл разбит на {len(chunks)} чанков (макс. {chunk_size:,} токенов каждый)")
+        print(f"📦 Файл разбит на {len(chunks)} чанков (мин. 10,000 токенов каждый)")
         
-        # Рассчитываем время обработки
-        if concurrent > 1:
-            estimated_time = (len(chunks) * 15) / concurrent + (len(chunks) * delay)
-        else:
-            estimated_time = len(chunks) * (15 + delay)
-        
+        # Рассчитываем время обработки для параллельной обработки
+        estimated_time_per_chunk = 15 if not self.paid_tier else 8
+        estimated_time = (len(chunks) * estimated_time_per_chunk) / concurrent + (len(chunks) * delay / concurrent)
         estimated_minutes = estimated_time / 60
+        
         print(f"⏱️ Примерное время обработки: {estimated_minutes:.1f} минут")
+        print(f"🚀 Полная параллельная обработка: {concurrent} одновременных запросов")
         
-        if concurrent > 1:
-            print(f"🚀 Параллельная обработка: {concurrent} одновременных запросов")
-        
-        results = []
+        # Создаем семафор для ограничения количества одновременных запросов
         semaphore = asyncio.Semaphore(concurrent)
         
-        connector = aiohttp.TCPConnector(limit=concurrent * 2)
+        connector = aiohttp.TCPConnector(
+            limit=concurrent * 3,  # Увеличиваем лимит соединений
+            limit_per_host=concurrent * 2,
+            ttl_dns_cache=300,
+            use_dns_cache=True,
+        )
         timeout = aiohttp.ClientTimeout(total=600)
         
         async def process_with_semaphore(session, chunk, i):
             async with semaphore:
-                print(f"🔄 Обработка чанка {i + 1}/{len(chunks)} ({datetime.now().strftime('%H:%M:%S')})")
+                start_time = asyncio.get_event_loop().time()
+                print(f"🔄 Начинаем чанк {i + 1}/{len(chunks)} ({datetime.now().strftime('%H:%M:%S')})")
+                
                 result = await self.process_chunk_with_retry(session, chunk, prompt, i)
                 
+                end_time = asyncio.get_event_loop().time()
+                duration = end_time - start_time
+                
+                if result.get("success"):
+                    print(f"✅ Завершен чанк {i + 1}/{len(chunks)} за {duration:.1f}с")
+                else:
+                    print(f"❌ Ошибка в чанке {i + 1}/{len(chunks)}: {result.get('error', 'Неизвестная ошибка')}")
+                
+                # Применяем задержку только если она установлена
                 if delay > 0:
-                    print(f"⏸️ Задержка {delay}с...")
+                    print(f"⏸️ Задержка {delay}с после чанка {i + 1}...")
                     await asyncio.sleep(delay)
                 
                 return result
         
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-            if concurrent == 1:
-                # Последовательная обработка
-                for i, chunk in enumerate(chunks):
-                    result = await process_with_semaphore(session, chunk, i)
-                    results.append(result)
-            else:
-                # Параллельная обработка
-                tasks = [process_with_semaphore(session, chunk, i) for i, chunk in enumerate(chunks)]
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                
-                # Обрабатываем исключения
-                for i, result in enumerate(results):
-                    if isinstance(result, Exception):
-                        results[i] = {
-                            "chunk_index": i,
-                            "success": False,
-                            "error": str(result)
-                        }
+            # Всегда используем параллельную обработку, даже при concurrent=1
+            print(f"🚀 Запускаем {len(chunks)} задач параллельно с ограничением {concurrent} одновременных")
+            
+            start_time = time.time()
+            
+            # Создаем все задачи сразу
+            tasks = [process_with_semaphore(session, chunk, i) for i, chunk in enumerate(chunks)]
+            
+            # Запускаем все задачи параллельно
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            end_time = time.time()
+            total_duration = end_time - start_time
+            
+            print(f"\n⏱️ Время выполнения всех задач: {total_duration / 60:.1f} минут")
+            
+            # Обрабатываем исключения
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    results[i] = {
+                        "chunk_index": i,
+                        "success": False,
+                        "error": str(result)
+                    }
         
         # Сохранение результатов
         successful_results = [r for r in results if isinstance(r, dict) and r.get("success")]
@@ -302,6 +361,7 @@ class GeminiFileProcessor:
                 print(f"   📥 Входящие: {total_input_tokens:,}")
                 print(f"   📤 Исходящие: {total_output_tokens:,}")
                 print(f"   💾 Результат: {output_path}")
+                print(f"   ⚡ Эффективность параллелизации: {(len(chunks) * estimated_time_per_chunk) / total_duration:.1f}x")
                 
                 # Показываем размер результата
                 result_size = len(final_content) / 1024
@@ -322,7 +382,7 @@ def main():
     parser.add_argument("--prompt", required=True, help="Промпт для обработки")
     parser.add_argument("--output", required=True, help="Путь к выходному файлу")
     parser.add_argument("--model", default="gemini-2.0-flash", help="Модель Gemini")
-    parser.add_argument("--chunk-size", type=int, default=1000000, help="Размер чанка в токенах")
+    parser.add_argument("--chunk-size", type=int, default=1000000, help="Размер чанка в токенах (мин. 12000)")
     parser.add_argument("--delay", type=int, default=0, help="Задержка между запросами в секундах")
     parser.add_argument("--concurrent", type=int, default=1, help="Количество параллельных запросов")
     parser.add_argument("--paid-tier", action="store_true", help="Использовать лимиты платного уровня")
@@ -341,12 +401,14 @@ def main():
         sys.exit(1)
     
     # Валидация параметров
-    if args.concurrent < 1 or args.concurrent > 10:
-        print("❌ Количество параллельных запросов должно быть от 1 до 10")
+    if args.concurrent < 1 or args.concurrent > 20:
+        print("❌ Количество параллельных запросов должно быть от 1 до 20")
         sys.exit(1)
     
-    if args.chunk_size < 1000 or args.chunk_size > 5000000:
-        print("❌ Размер чанка должен быть от 1,000 до 5,000,000 токенов")
+    # Новое ограничение с учетом минимального размера чанка
+    if args.chunk_size < 12000 or args.chunk_size > 5000000:
+        print("❌ Размер чанка должен быть от 12,000 до 5,000,000 токенов")
+        print("   (минимальный размер 10,000 + резерв для промпта и ответа)")
         sys.exit(1)
     
     processor = GeminiFileProcessor(api_key, args.model, args.paid_tier)
