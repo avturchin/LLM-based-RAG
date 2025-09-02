@@ -1,4 +1,3 @@
-# .github/workflows/gemini-bulk-processor.yml
 name: Gemini Bulk File Processor
 
 on:
@@ -37,16 +36,20 @@ on:
         default: 'gemini-2.0-flash'
       
       chunk_size:
-        description: 'Размер чанка в токенах (для платного уровня)'
+        description: 'Размер чанка в токенах (мин. 12000 для чанков по 10000)'
         required: false
         type: choice
         options:
+          - '15000'
+          - '25000'
+          - '50000'
+          - '100000'
+          - '200000'
           - '500000'
           - '1000000'
           - '1500000'
           - '2000000'
-          - '3000000'
-        default: '1000000'
+        default: '50000'
       
       delay_between_chunks:
         description: 'Задержка между чанками в секундах'
@@ -54,11 +57,11 @@ on:
         type: choice
         options:
           - '0'
+          - '1'
+          - '2'
           - '5'
           - '10'
           - '15'
-          - '30'
-          - '60'
         default: '0'
       
       concurrent_requests:
@@ -70,8 +73,11 @@ on:
           - '2'
           - '3'
           - '5'
+          - '8'
           - '10'
-        default: '3'
+          - '15'
+          - '20'
+        default: '10'
 
 jobs:
   validate-inputs:
@@ -107,12 +113,16 @@ jobs:
           # Примерная оценка токенов (1 токен ≈ 4 символа)
           estimated_tokens=$((file_size / 4))
           chunk_size=${{ github.event.inputs.chunk_size }}
-          estimated_chunks=$((estimated_tokens / chunk_size + 1))
+          
+          # Учитываем минимальный размер чанка 10,000 токенов
+          min_chunk_size=10000
+          effective_chunk_size=$((chunk_size > min_chunk_size ? chunk_size : min_chunk_size))
+          estimated_chunks=$((estimated_tokens / effective_chunk_size + 1))
           
           echo "estimated_chunks=$estimated_chunks" >> $GITHUB_OUTPUT
           
           echo "🔢 Примерное количество токенов: $estimated_tokens"
-          echo "📦 Примерное количество чанков: $estimated_chunks"
+          echo "📦 Примерное количество чанков: $estimated_chunks (мин. размер: 10,000 токенов)"
           
         else
           echo "exists=false" >> $GITHUB_OUTPUT
@@ -120,7 +130,7 @@ jobs:
           exit 1
         fi
     
-    - name: Estimate processing time for paid tier
+    - name: Estimate processing time for parallel processing
       id: estimate
       if: steps.check.outputs.exists == 'true'
       run: |
@@ -128,25 +138,31 @@ jobs:
         delay=${{ github.event.inputs.delay_between_chunks }}
         concurrent=${{ github.event.inputs.concurrent_requests }}
         
-        # Время для платного уровня (быстрая обработка)
-        processing_time_per_chunk=10
+        # Время для платного уровня с полной параллелизацией
+        processing_time_per_chunk=8
         
-        # Используем bc для вычислений с плавающей точкой
+        # Расчет времени с учетом параллелизации
         total_processing_time=$((estimated_chunks * processing_time_per_chunk / concurrent))
-        total_delay_time=$((estimated_chunks * delay))
+        total_delay_time=$((estimated_chunks * delay / concurrent))
         total_time_seconds=$((total_processing_time + total_delay_time))
         estimated_minutes=$((total_time_seconds / 60))
         
+        # Минимум 1 минута
+        if [ $estimated_minutes -lt 1 ]; then
+          estimated_minutes=1
+        fi
+        
         echo "time=${estimated_minutes}" >> $GITHUB_OUTPUT
         echo "⏱️ Примерное время обработки: ${estimated_minutes} минут"
-        echo "🚀 Платный уровень: быстрая обработка с $concurrent одновременными запросами"
+        echo "🚀 Полная параллелизация: $concurrent одновременных запросов"
+        echo "📦 Минимальный размер чанка: 10,000 токенов"
         
         if [ $estimated_minutes -gt 30 ]; then
           echo "ℹ️ Обработка займет более 30 минут"
         fi
 
   process-file:
-    name: Process File with Gemini (Paid Tier)
+    name: Process File with Gemini (Fast Parallel)
     runs-on: ubuntu-latest
     needs: validate-inputs
     if: needs.validate-inputs.outputs.file-exists == 'true'
@@ -192,28 +208,34 @@ jobs:
         mkdir -p outputs
         echo "📁 Создана директория outputs/"
     
-    - name: Show processing parameters (Paid Tier)
+    - name: Show processing parameters (Fast Parallel)
       run: |
         file_size=${{ needs.validate-inputs.outputs.file-size }}
         file_size_kb=$((file_size / 1024))
         
-        echo "🚀 Параметры обработки (ПЛАТНЫЙ УРОВЕНЬ):"
+        echo "🚀 ПАРАМЕТРЫ БЫСТРОЙ ПАРАЛЛЕЛЬНОЙ ОБРАБОТКИ:"
+        echo "========================================"
         echo "   📄 Файл: ${{ github.event.inputs.input_file }}"
         echo "   📏 Размер: ${file_size_kb}KB"
         echo "   🤖 Модель: ${{ github.event.inputs.model }}"
         echo "   📦 Размер чанка: ${{ github.event.inputs.chunk_size }} токенов"
+        echo "   📏 Минимальный чанк: 10,000 токенов"
         echo "   ⚡ Задержка: ${{ github.event.inputs.delay_between_chunks }} секунд"
         echo "   🔄 Параллельных запросов: ${{ github.event.inputs.concurrent_requests }}"
         echo "   📦 Ожидаемых чанков: ${{ needs.validate-inputs.outputs.estimated-chunks }}"
         echo "   💾 Выходной файл: ${{ github.event.inputs.output_filename }}.txt"
         echo "   📝 Промпт: ${{ github.event.inputs.prompt }}"
         echo ""
-        echo "💳 Используются лимиты платного уровня для максимальной скорости"
+        echo "⚡ ПРЕИМУЩЕСТВА БЫСТРОЙ ОБРАБОТКИ:"
+        echo "   ✅ Все чанки обрабатываются параллельно"
+        echo "   ✅ Минимальный размер чанка 10,000 токенов"
+        echo "   ✅ Оптимизированные таймауты и соединения"
+        echo "   ✅ Автоматическое восстановление при ошибках"
     
-    - name: Process file with Gemini API (Paid Tier)
+    - name: Process file with Gemini API (Fast Parallel)
       id: process
       run: |
-        echo "🚀 Начинаем быструю обработку файла на платном уровне..."
+        echo "🚀 Начинаем быструю параллельную обработку..."
         
         # Устанавливаем переменные для обработки ошибок
         set +e
@@ -283,7 +305,7 @@ jobs:
       if: steps.check_output.outputs.file_created == 'true'
       uses: actions/upload-artifact@v4
       with:
-        name: ${{ github.event.inputs.output_filename }}-${{ github.event.inputs.model }}-paid-result
+        name: ${{ github.event.inputs.output_filename }}-${{ github.event.inputs.model }}-fast-parallel-result
         path: outputs/${{ github.event.inputs.output_filename }}.txt
         retention-days: 90
         compression-level: 0
@@ -296,18 +318,19 @@ jobs:
         input_size=${{ needs.validate-inputs.outputs.file-size }}
         input_size_kb=$((input_size / 1024))
         
-        echo "# 🚀 Отчет об обработке файла (Платный уровень)" > "$summary_file"
+        echo "# 🚀 Отчет о быстрой параллельной обработке" > "$summary_file"
         echo "" >> "$summary_file"
         echo "## 📊 Параметры обработки" >> "$summary_file"
         echo "- **Входной файл**: \`${{ github.event.inputs.input_file }}\`" >> "$summary_file"
         echo "- **Размер входного файла**: ${input_size_kb}KB" >> "$summary_file"
         echo "- **Модель**: \`${{ github.event.inputs.model }}\`" >> "$summary_file"
         echo "- **Размер чанка**: ${{ github.event.inputs.chunk_size }} токенов" >> "$summary_file"
+        echo "- **Минимальный чанк**: 10,000 токенов" >> "$summary_file"
         echo "- **Задержка между запросами**: ${{ github.event.inputs.delay_between_chunks }} секунд" >> "$summary_file"
         echo "- **Параллельных запросов**: ${{ github.event.inputs.concurrent_requests }}" >> "$summary_file"
         echo "- **Ожидаемых чанков**: ${{ needs.validate-inputs.outputs.estimated-chunks }}" >> "$summary_file"
         echo "- **Время обработки**: $(date)" >> "$summary_file"
-        echo "- **Уровень**: 💳 Платный (высокие лимиты)" >> "$summary_file"
+        echo "- **Режим**: 🚀 Быстрая параллельная обработка" >> "$summary_file"
         echo "" >> "$summary_file"
         echo "## 📈 Результат" >> "$summary_file"
         echo "- **Статус**: ${{ steps.process.outputs.success || 'failed' }}" >> "$summary_file"
@@ -327,11 +350,12 @@ jobs:
         echo "\`\`\`" >> "$summary_file"
         
         echo "" >> "$summary_file"
-        echo "## ⚡ Преимущества платного уровня" >> "$summary_file"
-        echo "- Высокие лимиты TPM (токенов в минуту)" >> "$summary_file"
-        echo "- Минимальные задержки между запросами" >> "$summary_file"
-        echo "- Параллельная обработка чанков" >> "$summary_file"
-        echo "- Большие размеры чанков для эффективности" >> "$summary_file"
+        echo "## ⚡ Преимущества быстрой обработки" >> "$summary_file"
+        echo "- ✅ Все чанки обрабатываются одновременно" >> "$summary_file"
+        echo "- ✅ Минимальный размер чанка 10,000 токенов" >> "$summary_file"
+        echo "- ✅ Оптимизированные сетевые соединения" >> "$summary_file"
+        echo "- ✅ Автоматическое восстановление при ошибках" >> "$summary_file"
+        echo "- ✅ Максимальная скорость обработки" >> "$summary_file"
         
         cat "$summary_file"
     
@@ -339,7 +363,7 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: processing-summary-paid
+        name: processing-summary-fast-parallel
         path: outputs/processing_summary.md
         retention-days: 30
     
@@ -355,9 +379,11 @@ jobs:
         echo "  \"output_size_bytes\": ${{ steps.check_output.outputs.file_size }}," >> "$metrics_file"
         echo "  \"model\": \"${{ github.event.inputs.model }}\"," >> "$metrics_file"
         echo "  \"chunk_size\": ${{ github.event.inputs.chunk_size }}," >> "$metrics_file"
+        echo "  \"min_chunk_size\": 10000," >> "$metrics_file"
         echo "  \"delay_seconds\": ${{ github.event.inputs.delay_between_chunks }}," >> "$metrics_file"
         echo "  \"concurrent_requests\": ${{ github.event.inputs.concurrent_requests }}," >> "$metrics_file"
         echo "  \"estimated_chunks\": ${{ needs.validate-inputs.outputs.estimated-chunks }}," >> "$metrics_file"
+        echo "  \"processing_mode\": \"fast_parallel\"," >> "$metrics_file"
         echo "  \"tier\": \"paid\"," >> "$metrics_file"
         echo "  \"status\": \"${{ steps.process.outputs.success }}\"," >> "$metrics_file"
         echo "  \"estimated_processing_time_minutes\": ${{ needs.validate-inputs.outputs.estimated-time }}" >> "$metrics_file"
@@ -370,7 +396,7 @@ jobs:
       if: steps.check_output.outputs.file_created == 'true'
       uses: actions/upload-artifact@v4
       with:
-        name: performance-metrics
+        name: performance-metrics-fast-parallel
         path: outputs/performance_metrics.json
         retention-days: 90
     
@@ -379,7 +405,7 @@ jobs:
       continue-on-error: true
       run: |
         git config --local user.email "action@github.com"
-        git config --local user.name "Gemini Processor Bot"
+        git config --local user.name "Gemini Fast Processor Bot"
         
         # Добавляем только файлы результатов
         git add outputs/
@@ -390,13 +416,15 @@ jobs:
           timestamp=$(date '+%Y-%m-%d %H:%M:%S')
           model="${{ github.event.inputs.model }}"
           chunk_size="${{ github.event.inputs.chunk_size }}"
+          concurrent="${{ github.event.inputs.concurrent_requests }}"
           
-          git commit -m "🚀 Обработка файла на платном уровне: ${{ github.event.inputs.output_filename }}.txt
+          git commit -m "🚀 Быстрая параллельная обработка: ${{ github.event.inputs.output_filename }}.txt
 
-          📊 Параметры:
+          ⚡ Параметры быстрой обработки:
           - Модель: $model
-          - Размер чанка: $chunk_size токенов
-          - Параллельность: ${{ github.event.inputs.concurrent_requests }}x
+          - Размер чанка: $chunk_size токенов (мин. 10,000)
+          - Параллельность: ${concurrent}x одновременно
+          - Режим: Полная параллелизация всех чанков
           - Время: $timestamp"
           
           # Пробуем запушить изменения
@@ -416,8 +444,8 @@ jobs:
     steps:
     - name: Processing completion summary
       run: |
-        echo "🎯 ОБРАБОТКА ЗАВЕРШЕНА (ПЛАТНЫЙ УРОВЕНЬ)"
-        echo "========================================"
+        echo "🎯 БЫСТРАЯ ПАРАЛЛЕЛЬНАЯ ОБРАБОТКА ЗАВЕРШЕНА"
+        echo "=========================================="
         
         file_size=${{ needs.validate-inputs.outputs.file-size }}
         file_size_kb=$((file_size / 1024))
@@ -425,7 +453,8 @@ jobs:
         echo "📄 Файл: ${{ github.event.inputs.input_file }}"
         echo "📏 Размер: ${file_size_kb}KB"
         echo "🤖 Модель: ${{ github.event.inputs.model }}"
-        echo "📦 Чанк: ${{ github.event.inputs.chunk_size }} токенов"
+        echo "📦 Размер чанка: ${{ github.event.inputs.chunk_size }} токенов"
+        echo "📏 Минимальный чанк: 10,000 токенов"
         echo "⚡ Задержка: ${{ github.event.inputs.delay_between_chunks }}с"
         echo "🔄 Параллельность: ${{ github.event.inputs.concurrent_requests }}x"
         echo "📦 Чанков: ${{ needs.validate-inputs.outputs.estimated-chunks }}"
@@ -439,9 +468,9 @@ jobs:
           echo "   1. Перейдите во вкладку 'Actions'"
           echo "   2. Выберите этот workflow"
           echo "   3. Скачайте артефакты:"
-          echo "      - '${{ github.event.inputs.output_filename }}-${{ github.event.inputs.model }}-paid-result' (основной результат)"
-          echo "      - 'processing-summary-paid' (отчет)"
-          echo "      - 'performance-metrics' (метрики)"
+          echo "      - '${{ github.event.inputs.output_filename }}-${{ github.event.inputs.model }}-fast-parallel-result' (основной результат)"
+          echo "      - 'processing-summary-fast-parallel' (отчет)"
+          echo "      - 'performance-metrics-fast-parallel' (метрики)"
         elif [ "${{ needs.process-file.result }}" == "failure" ]; then
           echo "❌ Статус: Ошибка"
           echo "   Проверьте логи выполнения для подробностей"
@@ -451,8 +480,9 @@ jobs:
         fi
         
         echo ""
-        echo "💳 Преимущества платного уровня использованы:"
-        echo "   ✅ Высокие лимиты TPM"
-        echo "   ✅ Минимальные задержки"
-        echo "   ✅ Параллельная обработка"
-        echo "   ✅ Большие чанки для эффективности"
+        echo "🚀 ПРЕИМУЩЕСТВА БЫСТРОЙ ОБРАБОТКИ:"
+        echo "   ✅ Все чанки обрабатываются одновременно"
+        echo "   ✅ Минимальный размер чанка 10,000 токенов"
+        echo "   ✅ Оптимальная скорость обработки"
+        echo "   ✅ Автоматическое восстановление при ошибках"
+        echo "   ✅ Эффективное использование API лимитов"
