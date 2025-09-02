@@ -1,14 +1,16 @@
 {
-  "processing_date": "2025-08-21T18:57:09+00:00",
+  "processing_date": "2025-09-02T14:46:49+00:00",
   "input_file": "data/facts27.txt",
   "input_size_bytes": 2423666,
-  "output_size_bytes": 9242,
+  "output_size_bytes": 45045,
   "model": "gemini-2.0-flash",
-  "chunk_size": 500000,
+  "chunk_size": 50000,
+  "min_chunk_size": 10000,
   "delay_seconds": 0,
-  "concurrent_requests": 3,
-  "estimated_chunks": 2,
+  "concurrent_requests": 10,
+  "estimated_chunks": 13,
+  "processing_mode": "fast_parallel",
   "tier": "paid",
   "status": "partial",
-  "estimated_processing_time_minutes": 0
+  "estimated_processing_time_minutes": 1
 }
